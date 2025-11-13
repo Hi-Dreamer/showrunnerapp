@@ -1,9 +1,12 @@
 const initialState = {
   shows: [],
+  activeShows: [],
+  expiredShows: [],
   currentShow: null,
   venues: [],
   hiModules: [],
   loading: false,
+  loadingExpired: false,
   error: null,
 };
 
@@ -19,6 +22,7 @@ const showReducer = (state = initialState, action) => {
       return {
         ...state,
         shows: action.payload,
+        activeShows: action.payload,
         loading: false,
         error: null,
       };
@@ -26,6 +30,25 @@ const showReducer = (state = initialState, action) => {
       return {
         ...state,
         loading: false,
+        error: action.payload,
+      };
+    case 'EXPIRED_SHOWS_LOAD_START':
+      return {
+        ...state,
+        loadingExpired: true,
+        error: null,
+      };
+    case 'EXPIRED_SHOWS_LOAD_SUCCESS':
+      return {
+        ...state,
+        expiredShows: action.payload,
+        loadingExpired: false,
+        error: null,
+      };
+    case 'EXPIRED_SHOWS_LOAD_FAILURE':
+      return {
+        ...state,
+        loadingExpired: false,
         error: action.payload,
       };
     case 'SHOW_SET_CURRENT':

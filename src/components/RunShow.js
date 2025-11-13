@@ -40,7 +40,13 @@ const RunShow = ({ showId, onBack }) => {
    * Channels module is always first if user/venue has channels
    */
   const determineEnabledModules = (showData) => {
-    if (!showData || !showData.hi_module_ids) {
+    // If showData is missing, return empty array
+    if (!showData) {
+      return [];
+    }
+    
+    // If hi_module_ids is missing or not an array, return empty array
+    if (!showData.hi_module_ids || !Array.isArray(showData.hi_module_ids) || showData.hi_module_ids.length === 0) {
       return [];
     }
     
@@ -76,7 +82,12 @@ const RunShow = ({ showId, onBack }) => {
             break;
           case 'Draw':
             tempModules.push('draw');
-            tempModules.push('buzzer'); // Buzzer is part of Draw module
+            // Only add buzzer if it's also explicitly in hi_module_ids
+            // Don't automatically add buzzer when Draw is enabled
+            break;
+          case 'Buzzer':
+            // Buzzer is a separate module that can be enabled independently
+            tempModules.push('buzzer');
             break;
           default:
             break;

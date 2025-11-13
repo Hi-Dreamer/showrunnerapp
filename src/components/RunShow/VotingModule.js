@@ -3,6 +3,7 @@ import { View, Text, TouchableOpacity, StyleSheet, Alert, ScrollView, Modal, Fla
 import { useDispatch, useSelector } from 'react-redux';
 import { setShowState, resetPicks, runShowUpdateState } from '../../actions/runShowActions';
 import ApiService from '../../services/api';
+import { orderPerformersByShowOrder } from '../../utils/performerUtils';
 
 /**
  * Voting Module Component
@@ -34,18 +35,21 @@ const VotingModule = ({ showId }) => {
     const loadPerformers = async () => {
       try {
         const api = ApiService.getClient();
+        // Load show to get performer_ids array (which has the correct order)
+        const show = await api.shows(showId).get();
         const performersData = await api.performers.get({ show_id: showId });
         if (performersData && performersData.length > 0) {
-          const sortedPerformers = [...performersData].sort((a, b) => a.id - b.id);
-          setPerformers(sortedPerformers);
-          if (!selectedPerformerId && sortedPerformers.length > 0) {
-            const firstPerformer = sortedPerformers[0];
+          // Order performers to match the order in show.performer_ids
+          const orderedPerformers = orderPerformersByShowOrder(performersData, show);
+          setPerformers(orderedPerformers);
+          if (!selectedPerformerId && orderedPerformers.length > 0) {
+            const firstPerformer = orderedPerformers[0];
             setSelectedPerformerId(firstPerformer.id);
             setSelectedPerformerName(firstPerformer.name);
           }
           // Initialize pick performers selection
           if (selectedPickPerformers.length === 0) {
-            setSelectedPickPerformers(sortedPerformers.map(p => p.id));
+            setSelectedPickPerformers(orderedPerformers.map(p => p.id));
           }
         }
       } catch (error) {

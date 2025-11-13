@@ -318,8 +318,9 @@ const ShowFormPage5 = ({ slide, slideIndex, onSave, onCancel }) => {
                     }
 
                     // Launch image picker (no cropping, just select and upload)
+                    // Use string 'images' for mediaTypes (MediaType.Images may not be available in all versions)
                     const result = await ImagePicker.launchImageLibraryAsync({
-                      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+                      mediaTypes: 'images',
                       allowsEditing: false,
                       quality: 0.8,
                     });

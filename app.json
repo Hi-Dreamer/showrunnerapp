@@ -7,6 +7,9 @@
     "icon": "./assets/hi_logo.png",
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
+    "plugins": [
+      "@react-native-community/datetimepicker"
+    ],
     "splash": {
       "image": "./assets/hi_logo.png",
       "resizeMode": "contain",

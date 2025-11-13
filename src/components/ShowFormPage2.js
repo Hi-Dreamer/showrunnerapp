@@ -1,39 +1,48 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, Alert, Switch, FlatList, Modal, Platform, Image } from 'react-native';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, Alert, Switch, FlatList, Modal, Platform } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useDispatch, useSelector } from 'react-redux';
-import { updateShow, loadShow, deleteShow } from '../actions/showActions';
+import { updateShow, createShow, loadShow, deleteShow, loadShows, loadExpiredShows } from '../actions/showActions';
 import ApiService from '../services/api';
 import { DateUtils } from '../utils/dateUtils';
+import PageHeader from './PageHeader';
+import { COLORS } from '../constants/theme';
 
-const ShowFormPage2 = ({ showId, page1Data, onBack, onSave, onNavigateToMessaging, onNavigateToSlides }) => {
+const ShowFormPage2 = ({ showId, page1Data, copyShowData, initialPerformers, onBack, onSave, onNavigateToMessaging, onNavigateToSlides, onNavigateToPerformers }) => {
   const dispatch = useDispatch();
   const { currentShow, hiModules } = useSelector((state) => state.show);
+  const { user } = useSelector((state) => state.auth);
 
   const [showDatetime, setShowDatetime] = useState(null);
   const [showEndDatetime, setShowEndDatetime] = useState(null);
   const [showDatePicker, setShowDatePicker] = useState(null);
   const [selectedPerformers, setSelectedPerformers] = useState([]);
-  const [availablePerformers, setAvailablePerformers] = useState([]);
-  const [performerSearchText, setPerformerSearchText] = useState('');
-  const [showPerformerPicker, setShowPerformerPicker] = useState(false);
   const [tvTheme, setTvTheme] = useState('light');
   const [tvScoreVisible, setTvScoreVisible] = useState(false);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [loadedShow, setLoadedShow] = useState(null); // Store loaded show data for hi_module checks
+  const [hasOverlap, setHasOverlap] = useState(false);
+  const [overlapWarning, setOverlapWarning] = useState('');
+  const overlapCheckTimeoutRef = useRef(null);
+  const isCheckingOverlapRef = useRef(false);
+  const checkForOverlapsRef = useRef(null);
+  const hasInitialCheckRef = useRef(false);
 
 
   // Check if a hi_module is selected
-  // When editing, check loadedShow.hi_module_ids; when creating, check page1Data.selectedHiModules
+  // When editing, check loadedShow.hi_module_ids; when creating/copying, check page1Data.selectedHiModules
   const hiModuleSelected = (moduleNames) => {
     if (!hiModules) return false;
     
-    // Get the selected module IDs - either from page1Data (new show) or loadedShow (editing)
+    // Get the selected module IDs - either from page1Data (new show/copy) or loadedShow (editing)
     let selectedModuleIds = [];
     if (showId && loadedShow?.hi_module_ids) {
       // Editing mode - use the show's actual hi_module_ids
       selectedModuleIds = loadedShow.hi_module_ids;
+    } else if (copyShowData?.hi_module_ids) {
+      // Copying mode - use copyShowData
+      selectedModuleIds = copyShowData.hi_module_ids;
     } else if (page1Data?.selectedHiModules) {
       // New show mode - use page1Data
       selectedModuleIds = page1Data.selectedHiModules;
@@ -46,6 +55,183 @@ const ShowFormPage2 = ({ showId, page1Data, onBack, onSave, onNavigateToMessagin
       .map(m => m.id);
     return moduleIds.some(id => selectedModuleIds.includes(id));
   };
+
+  // Check if a show is an Extended Voting show (by duration > 12 hours)
+  const isExtendedVotingShow = (show) => {
+    if (!show) return false;
+    
+    // Check if show duration is > 12 hours (Extended Voting shows)
+    if (show.show_datetime && show.show_end_datetime) {
+      const startDate = new Date(show.show_datetime);
+      const endDate = new Date(show.show_end_datetime);
+      const durationHours = (endDate - startDate) / (1000 * 60 * 60);
+      if (durationHours > 12) {
+        return true;
+      }
+    }
+    
+    // Fallback: Check hi_module_ids if available
+    if (hiModules && show.hi_module_ids) {
+      const extendedVotingModule = hiModules.find(m => m.name === 'Extended Voting');
+      if (extendedVotingModule && show.hi_module_ids.includes(extendedVotingModule.id)) {
+        return true;
+      }
+    }
+    
+    return false;
+  };
+
+  // Check if current show would be Extended Voting (> 12 hours)
+  const isCurrentShowExtendedVoting = () => {
+    if (!showDatetime || !showEndDatetime) return false;
+    const durationHours = (showEndDatetime - showDatetime) / (1000 * 60 * 60);
+    return durationHours > 12;
+  };
+
+  // Count Extended Voting shows from a list
+  const countExtendedVotingShows = (allShows) => {
+    if (!allShows || !Array.isArray(allShows)) return 0;
+    
+    let count = 0;
+    for (const show of allShows) {
+      // Skip the current show if editing
+      if (showId && show.id === showId) {
+        continue;
+      }
+      
+      if (show.show_datetime && show.show_end_datetime) {
+        const startDate = new Date(show.show_datetime);
+        const endDate = new Date(show.show_end_datetime);
+        const durationHours = (endDate - startDate) / (1000 * 60 * 60);
+        if (durationHours > 12) {
+          count++;
+        }
+      }
+    }
+    return count;
+  };
+
+  // Check if two date ranges overlap
+  const dateRangesOverlap = (start1, end1, start2, end2) => {
+    if (!start1 || !end1 || !start2 || !end2) return false;
+    // Two ranges overlap if: start1 < end2 && start2 < end1
+    return new Date(start1) < new Date(end2) && new Date(start2) < new Date(end1);
+  };
+
+  // Check for overlapping shows
+  const checkForOverlaps = useCallback(async (startDate, endDate) => {
+    if (!startDate || !endDate) {
+      setHasOverlap(false);
+      setOverlapWarning('');
+      return;
+    }
+
+    // Prevent concurrent overlap checks
+    if (isCheckingOverlapRef.current) {
+      return;
+    }
+
+    isCheckingOverlapRef.current = true;
+
+    try {
+      // Load all shows (both active and expired) to check for overlaps
+      const api = ApiService.getClient();
+      const [activeShows, expiredShows] = await Promise.all([
+        api.shows.get({ date_filter: 'upcoming', page: 1 }),
+        api.shows.get({ date_filter: 'past', page: 1 }),
+      ]);
+      
+      const allShowsToCheck = [...(activeShows || []), ...(expiredShows || [])];
+      // Don't update allShows state as it's not needed and could cause re-renders
+
+      // Check if current show would be Extended Voting (> 12 hours)
+      const durationHours = (endDate - startDate) / (1000 * 60 * 60);
+      const wouldBeExtendedVoting = durationHours > 12;
+
+      // Check extended voting limit if this would be an Extended Voting show
+      if (wouldBeExtendedVoting) {
+        const extendedVotingShowsAllowed = user?.extended_voting_shows_allowed || 0;
+        if (extendedVotingShowsAllowed > 0) {
+          const currentExtendedVotingCount = countExtendedVotingShows(allShowsToCheck);
+          
+          // If we're editing an existing Extended Voting show, don't count it
+          const isEditingExtendedVoting = showId && isCurrentShowExtendedVoting();
+          const adjustedCount = isEditingExtendedVoting ? currentExtendedVotingCount : currentExtendedVotingCount;
+          
+          if (adjustedCount >= extendedVotingShowsAllowed) {
+            setHasOverlap(true);
+            setOverlapWarning(
+              `Warning: You have reached your limit of ${extendedVotingShowsAllowed} Extended Voting show(s). This show exceeds 12 hours and would exceed your allowed limit.`
+            );
+            isCheckingOverlapRef.current = false;
+            return;
+          }
+        } else {
+          // User doesn't have permission for Extended Voting shows
+          setHasOverlap(true);
+          setOverlapWarning(
+            'Warning: This show exceeds 12 hours. Extended Voting shows require special permissions. Please reduce the duration to 12 hours or less.'
+          );
+          isCheckingOverlapRef.current = false;
+          return;
+        }
+      }
+
+      // Check for overlaps with other shows
+      for (const otherShow of allShowsToCheck) {
+        // Skip the current show if editing
+        if (showId && otherShow.id === showId) {
+          continue;
+        }
+
+        // Skip Extended Voting shows (they can overlap) - check by duration > 12 hours
+        if (isExtendedVotingShow(otherShow)) {
+          continue;
+        }
+
+        // If current show is Extended Voting, it can overlap with anything
+        if (wouldBeExtendedVoting) {
+          continue;
+        }
+
+        // Check if date ranges overlap
+        if (otherShow.show_datetime && otherShow.show_end_datetime) {
+          if (dateRangesOverlap(startDate, endDate, otherShow.show_datetime, otherShow.show_end_datetime)) {
+            setHasOverlap(true);
+            setOverlapWarning(
+              `Warning: This show overlaps with "${otherShow.name}" (${new Date(otherShow.show_datetime).toLocaleString()} - ${new Date(otherShow.show_end_datetime).toLocaleString()}). Please change the date to avoid conflicts.`
+            );
+            return;
+          }
+        }
+      }
+
+      // No overlaps found
+      setHasOverlap(false);
+      setOverlapWarning('');
+    } catch (error) {
+      console.error('Error checking for overlaps:', error);
+      // On error, don't block the user, but log it
+      setHasOverlap(false);
+      setOverlapWarning('');
+    } finally {
+      isCheckingOverlapRef.current = false;
+    }
+  }, [showId, loadedShow, copyShowData, page1Data, hiModules, user, showDatetime, showEndDatetime]);
+
+  // Store the latest checkForOverlaps function in a ref
+  checkForOverlapsRef.current = checkForOverlaps;
+
+  useEffect(() => {
+    if (initialPerformers && initialPerformers.length > 0) {
+      setSelectedPerformers(initialPerformers);
+    }
+  }, [initialPerformers]);
+
+  // Reset initial check flag when showId or copyShowData changes
+  useEffect(() => {
+    hasInitialCheckRef.current = false;
+  }, [showId, copyShowData]);
 
   useEffect(() => {
     if (showId) {
@@ -61,6 +247,15 @@ const ShowFormPage2 = ({ showId, page1Data, onBack, onSave, onNavigateToMessagin
             const endDate = DateUtils.getNextEndHour(startDate);
             setShowDatetime(startDate);
             setShowEndDatetime(endDate);
+            // Check for overlaps after setting dates - only on initial load
+            if (!hasInitialCheckRef.current) {
+              hasInitialCheckRef.current = true;
+              setTimeout(() => {
+                if (checkForOverlapsRef.current) {
+                  checkForOverlapsRef.current(startDate, endDate);
+                }
+              }, 100);
+            }
           } else {
             if (show.show_datetime) {
               setShowDatetime(new Date(show.show_datetime));
@@ -68,12 +263,21 @@ const ShowFormPage2 = ({ showId, page1Data, onBack, onSave, onNavigateToMessagin
             if (show.show_end_datetime) {
               setShowEndDatetime(new Date(show.show_end_datetime));
             }
+            // Check for overlaps after setting dates (debounced) - only on initial load
+            if (show.show_datetime && show.show_end_datetime && !hasInitialCheckRef.current) {
+              hasInitialCheckRef.current = true;
+              setTimeout(() => {
+                if (checkForOverlapsRef.current) {
+                  checkForOverlapsRef.current(new Date(show.show_datetime), new Date(show.show_end_datetime));
+                }
+              }, 100);
+            }
           }
           setTvTheme(show.tv_theme || 'light');
           setTvScoreVisible(show.tv_score_visible || false);
           
-          // Load performers
-          if (show.performer_ids && show.performer_ids.length > 0) {
+          // Load performers only if not provided via props
+          if (!initialPerformers && show.performer_ids && show.performer_ids.length > 0) {
             try {
               const api = ApiService.getClient();
               const performers = await api.performers.get({ show_id: showId });
@@ -85,131 +289,107 @@ const ShowFormPage2 = ({ showId, page1Data, onBack, onSave, onNavigateToMessagin
         }
         setLoading(false);
       });
+    } else if (copyShowData) {
+      // Copying a show - pre-populate from copyShowData (which should have all data loaded)
+      // Set loading to false immediately since we have the data
+      setLoading(false);
+      setLoadedShow(copyShowData);
+      
+      let startDate, endDate;
+      if (copyShowData.show_datetime) {
+        startDate = new Date(copyShowData.show_datetime);
+        setShowDatetime(startDate);
+      } else {
+        startDate = DateUtils.getNextHour();
+        setShowDatetime(startDate);
+      }
+      
+      if (copyShowData.show_end_datetime) {
+        endDate = new Date(copyShowData.show_end_datetime);
+        setShowEndDatetime(endDate);
+      } else {
+        endDate = DateUtils.getNextEndHour(copyShowData.show_datetime ? new Date(copyShowData.show_datetime) : null);
+        setShowEndDatetime(endDate);
+      }
+      
+      setTvTheme(copyShowData.tv_theme || 'light');
+      setTvScoreVisible(copyShowData.tv_score_visible || false);
+      
+      // Use performers from copyShowData - should already be loaded in ShowsList
+      if (copyShowData.performers && Array.isArray(copyShowData.performers)) {
+        setSelectedPerformers(copyShowData.performers);
+      } else if (copyShowData.performer_ids && copyShowData.performer_ids.length > 0) {
+        // Fallback: try to load performers if not already included
+        const loadPerformers = async () => {
+          try {
+            const api = ApiService.getClient();
+            const originalShowId = copyShowData.id;
+            if (originalShowId) {
+              const performers = await api.performers.get({ show_id: originalShowId });
+              setSelectedPerformers(performers || []);
+            }
+          } catch (error) {
+            console.error('Error loading performers for copy:', error);
+          }
+        };
+        loadPerformers();
+      }
+
+      // Check for overlaps after setting dates - only on initial load
+      if (startDate && endDate && !hasInitialCheckRef.current) {
+        hasInitialCheckRef.current = true;
+        setTimeout(() => {
+          if (checkForOverlapsRef.current) {
+            checkForOverlapsRef.current(startDate, endDate);
+          }
+        }, 100);
+      }
     } else {
       // New show - set default dates
       const startDate = DateUtils.getNextHour();
       const endDate = DateUtils.getNextEndHour(startDate);
       setShowDatetime(startDate);
       setShowEndDatetime(endDate);
+      // Check for overlaps after setting dates - only on initial load
+      if (!hasInitialCheckRef.current) {
+        hasInitialCheckRef.current = true;
+        setTimeout(() => {
+          if (checkForOverlapsRef.current) {
+            checkForOverlapsRef.current(startDate, endDate);
+          }
+        }, 100);
+      }
     }
-  }, [showId, dispatch]);
+  }, [showId, copyShowData, dispatch]);
 
-  // Search performers
+  // Check for overlaps when dates change (debounced) - but skip initial load
   useEffect(() => {
-    if (performerSearchText.length > 0) {
-      const timeout = setTimeout(async () => {
-        try {
-          const api = ApiService.getClient();
-          const performers = await api.performers.get({ search: performerSearchText });
-          setAvailablePerformers(performers || []);
-        } catch (error) {
-          console.error('Error searching performers:', error);
-          setAvailablePerformers([]);
-        }
-      }, 250);
-      return () => clearTimeout(timeout);
-    } else {
-      setAvailablePerformers([]);
+    // Skip if we haven't done the initial check yet (let the initial load useEffect handle it)
+    if (!hasInitialCheckRef.current) {
+      return;
     }
-  }, [performerSearchText]);
-
-  const addPerformer = async (performer) => {
-    if (!selectedPerformers.find(p => p.id === performer.id)) {
-      const newPerformers = [...selectedPerformers, performer];
-      setSelectedPerformers(newPerformers);
-      setPerformerSearchText('');
-      setShowPerformerPicker(false);
-      
-      // Auto-save performers if we're editing an existing show
-      if (showId) {
-        try {
-          const showData = {
-            name: page1Data.name,
-            code: page1Data.code || null,
-            venue_id: page1Data.venueId > 0 ? page1Data.venueId : null,
-            show_datetime: showDatetime ? DateUtils.formatForAPI(showDatetime) : (loadedShow?.show_datetime ? DateUtils.formatForAPI(new Date(loadedShow.show_datetime)) : null),
-            show_end_datetime: showEndDatetime ? DateUtils.formatForAPI(showEndDatetime) : (loadedShow?.show_end_datetime ? DateUtils.formatForAPI(new Date(loadedShow.show_end_datetime)) : null),
-            performer_ids: newPerformers.length > 0 ? newPerformers.map(p => p.id) : null,
-            tv_theme: tvTheme,
-            tv_score_visible: tvScoreVisible,
-          };
-          
-          // Include messaging fields if they exist on loadedShow
-          if (loadedShow) {
-            showData.text_performing_tv = loadedShow.text_performing_tv || null;
-            showData.text_performing_mobile = loadedShow.text_performing_mobile || null;
-            showData.text_voting_prompt_tv = loadedShow.text_voting_prompt_tv || null;
-            showData.text_voting_prompt_mobile = loadedShow.text_voting_prompt_mobile || null;
-            showData.text_voting_done_mobile = loadedShow.text_voting_done_mobile || null;
-            showData.text_voting_winner_tv = loadedShow.text_voting_winner_tv || null;
-            showData.text_voting_winner_mobile = loadedShow.text_voting_winner_mobile || null;
-            showData.text_draw_get_ready_tv = loadedShow.text_draw_get_ready_tv || null;
-            showData.text_draw_get_ready_mobile = loadedShow.text_draw_get_ready_mobile || null;
-          }
-          
-          await dispatch(updateShow(showId, showData));
-          // Reload show to get updated performer_ids
-          const updatedShow = await dispatch(loadShow(showId));
-          if (updatedShow) {
-            setLoadedShow(updatedShow);
-          }
-        } catch (error) {
-          console.error('Error auto-saving performer:', error);
-          // Don't show error to user - this is a background save
-          // Revert the performer addition on error
-          setSelectedPerformers(selectedPerformers);
-        }
-      }
-    } else {
-      Alert.alert('Already Added', 'That performer is already on this show!');
-    }
-  };
-
-  const removePerformer = async (performerId) => {
-    const newPerformers = selectedPerformers.filter(p => p.id !== performerId);
-    setSelectedPerformers(newPerformers);
     
-    // Auto-save performers if we're editing an existing show
-    if (showId) {
-      try {
-        const showData = {
-          name: page1Data.name,
-          code: page1Data.code || null,
-          venue_id: page1Data.venueId > 0 ? page1Data.venueId : null,
-          show_datetime: showDatetime ? DateUtils.formatForAPI(showDatetime) : (loadedShow?.show_datetime ? DateUtils.formatForAPI(new Date(loadedShow.show_datetime)) : null),
-          show_end_datetime: showEndDatetime ? DateUtils.formatForAPI(showEndDatetime) : (loadedShow?.show_end_datetime ? DateUtils.formatForAPI(new Date(loadedShow.show_end_datetime)) : null),
-          performer_ids: newPerformers.length > 0 ? newPerformers.map(p => p.id) : null,
-          tv_theme: tvTheme,
-          tv_score_visible: tvScoreVisible,
-        };
-        
-        // Include messaging fields if they exist on loadedShow
-        if (loadedShow) {
-          showData.text_performing_tv = loadedShow.text_performing_tv || null;
-          showData.text_performing_mobile = loadedShow.text_performing_mobile || null;
-          showData.text_voting_prompt_tv = loadedShow.text_voting_prompt_tv || null;
-          showData.text_voting_prompt_mobile = loadedShow.text_voting_prompt_mobile || null;
-          showData.text_voting_done_mobile = loadedShow.text_voting_done_mobile || null;
-          showData.text_voting_winner_tv = loadedShow.text_voting_winner_tv || null;
-          showData.text_voting_winner_mobile = loadedShow.text_voting_winner_mobile || null;
-          showData.text_draw_get_ready_tv = loadedShow.text_draw_get_ready_tv || null;
-          showData.text_draw_get_ready_mobile = loadedShow.text_draw_get_ready_mobile || null;
-        }
-        
-        await dispatch(updateShow(showId, showData));
-        // Reload show to get updated performer_ids
-        const updatedShow = await dispatch(loadShow(showId));
-        if (updatedShow) {
-          setLoadedShow(updatedShow);
-        }
-      } catch (error) {
-        console.error('Error auto-saving performer removal:', error);
-        // Don't show error to user - this is a background save
-        // Revert the performer removal on error
-        setSelectedPerformers(selectedPerformers);
+    if (showDatetime && showEndDatetime) {
+      // Use debounced check - clear any pending timeout first
+      if (overlapCheckTimeoutRef.current) {
+        clearTimeout(overlapCheckTimeoutRef.current);
       }
+      
+      // Set a new timeout to check after 500ms of no changes
+      overlapCheckTimeoutRef.current = setTimeout(() => {
+        if (checkForOverlapsRef.current) {
+          checkForOverlapsRef.current(showDatetime, showEndDatetime);
+        }
+      }, 500);
     }
-  };
+    
+    // Cleanup timeout on unmount or when dates change
+    return () => {
+      if (overlapCheckTimeoutRef.current) {
+        clearTimeout(overlapCheckTimeoutRef.current);
+      }
+    };
+  }, [showDatetime, showEndDatetime]);
 
   const handleDeleteShow = async () => {
     if (!showId) {
@@ -253,6 +433,11 @@ const ShowFormPage2 = ({ showId, page1Data, onBack, onSave, onNavigateToMessagin
       return;
     }
 
+    // Button should be disabled if hasOverlap, but double-check just in case
+    if (hasOverlap) {
+      return;
+    }
+
     setSaving(true);
 
     const showData = {
@@ -273,7 +458,19 @@ const ShowFormPage2 = ({ showId, page1Data, onBack, onSave, onNavigateToMessagin
         setTimeout(() => reject(new Error('Request timeout - the server took too long to respond')), 30000); // 30 second timeout
       });
 
-      const savePromise = dispatch(updateShow(showId, showData));
+      let savePromise;
+      if (showId) {
+        // Updating existing show
+        savePromise = dispatch(updateShow(showId, showData));
+      } else {
+        // Creating new show (either new or copy)
+        // Include hi_modules from page1Data for creation
+        const createData = {
+          ...showData,
+          hi_modules: page1Data?.selectedHiModules || [],
+        };
+        savePromise = dispatch(createShow(createData));
+      }
       
       const result = await Promise.race([savePromise, timeoutPromise]);
       setSaving(false);
@@ -293,7 +490,8 @@ const ShowFormPage2 = ({ showId, page1Data, onBack, onSave, onNavigateToMessagin
     }
   };
 
-  if (loading) {
+  // Don't show loading when copying - we have the data already
+  if (loading && !copyShowData) {
     return (
       <View style={styles.container}>
         <Text style={styles.loading}>Loading show...</Text>
@@ -304,14 +502,12 @@ const ShowFormPage2 = ({ showId, page1Data, onBack, onSave, onNavigateToMessagin
   return (
     <ScrollView style={styles.container}>
       <View style={styles.form}>
-        <View style={styles.titleRow}>
-          <Text style={styles.title}>Show Details</Text>
-          <Image 
-            source={require('../../assets/hi_logo.png')} 
-            style={styles.logo}
-            resizeMode="contain"
-          />
-        </View>
+        <PageHeader
+          title={loadedShow?.name || page1Data?.name || 'Show Details'}
+          showLogo={true}
+          logoSize="small"
+          titleFontSize="medium"
+        />
 
         <View style={styles.field}>
           <Text style={styles.label}>Start Date & Time *</Text>
@@ -333,8 +529,11 @@ const ShowFormPage2 = ({ showId, page1Data, onBack, onSave, onNavigateToMessagin
                 if (event.type === 'set' && selectedDate) {
                   setShowDatetime(selectedDate);
                   if (!showEndDatetime || selectedDate >= showEndDatetime) {
-                    setShowEndDatetime(DateUtils.getNextEndHour(selectedDate));
+                    const newEndDate = DateUtils.getNextEndHour(selectedDate);
+                    setShowEndDatetime(newEndDate);
+                    // Overlap check will be handled by the useEffect watching dates
                   }
+                  // Overlap check will be handled by the useEffect watching dates
                 } else if (event.type === 'dismissed') {
                   setShowDatePicker(null);
                 }
@@ -377,6 +576,7 @@ const ShowFormPage2 = ({ showId, page1Data, onBack, onSave, onNavigateToMessagin
                     return;
                   }
                   setShowEndDatetime(selectedDate);
+                  // Overlap check will be handled by the useEffect watching dates
                 } else if (event.type === 'dismissed') {
                   setShowDatePicker(null);
                 }
@@ -396,112 +596,85 @@ const ShowFormPage2 = ({ showId, page1Data, onBack, onSave, onNavigateToMessagin
           )}
         </View>
 
+        {hasOverlap && overlapWarning && (
+          <View style={styles.field}>
+            <View style={styles.warningContainer}>
+              <Text style={styles.warningText}>{overlapWarning}</Text>
+            </View>
+          </View>
+        )}
+
         {(hiModuleSelected(['Performing', 'Voting', 'Extended Voting']) || (showId && selectedPerformers.length > 0)) && (
           <View style={styles.field}>
-            <Text style={styles.sectionTitle}>Performers (optional)</Text>
-            <TouchableOpacity
-              style={styles.addButton}
-              onPress={() => setShowPerformerPicker(true)}
-            >
-              <Text style={styles.addButtonText}>+ Add Performer</Text>
-            </TouchableOpacity>
-            
-            {selectedPerformers.length > 0 && (
-              <View style={styles.performerList}>
-                {selectedPerformers.map((performer) => (
-                  <View key={performer.id} style={styles.performerItem}>
-                    <Text style={styles.performerName}>{performer.name}</Text>
-                    <TouchableOpacity
-                      onPress={() => removePerformer(performer.id)}
-                      style={styles.removeButton}
-                    >
-                      <Text style={styles.removeButtonText}>×</Text>
-                    </TouchableOpacity>
-                  </View>
-                ))}
+            <View style={styles.performersContainer}>
+              <View style={styles.performersTextContainer}>
+                <Text style={styles.performersText}>
+                  <Text style={styles.performersLabel}>Performers: </Text>
+                  {selectedPerformers.length > 0 ? (
+                    selectedPerformers.map((performer, index) => {
+                      const isFirst = index === 0;
+                      const isLast = index === selectedPerformers.length - 1;
+                      const isMiddle = !isFirst && !isLast;
+                      
+                      return (
+                        <Text key={performer.id || index}>
+                          {isFirst && <Text style={styles.hostLabel}>Host: </Text>}
+                          {isMiddle && <Text style={styles.numberLabel}>{index + 1}. </Text>}
+                          {isLast && selectedPerformers.length > 1 && <Text style={styles.hlLabel}>H/L: </Text>}
+                          {isLast && selectedPerformers.length === 1 && <Text style={styles.hlLabel}> H/L: </Text>}
+                          <Text style={styles.performersList}>{performer.name}</Text>
+                          {index < selectedPerformers.length - 1 && <Text>, </Text>}
+                        </Text>
+                      );
+                    })
+                  ) : (
+                    <Text style={styles.performersList}>No performers added</Text>
+                  )}
+                </Text>
               </View>
-            )}
-
-            <Modal
-              visible={showPerformerPicker}
-              transparent={true}
-              animationType="slide"
-              onRequestClose={() => {
-                setShowPerformerPicker(false);
-                setPerformerSearchText('');
-              }}
-            >
-              <View style={styles.pickerModal}>
-                <View style={styles.pickerContent}>
-                  <Text style={styles.pickerTitle}>Search and Add Performer</Text>
-                  <TextInput
-                    style={styles.searchInput}
-                    placeholder="Search performers..."
-                    value={performerSearchText}
-                    onChangeText={setPerformerSearchText}
-                    autoFocus
-                  />
-                  <FlatList
-                    data={availablePerformers}
-                    keyExtractor={(item) => item.id.toString()}
-                    renderItem={({ item }) => (
-                      <TouchableOpacity
-                        style={styles.performerOption}
-                        onPress={() => addPerformer(item)}
-                      >
-                        <Text style={styles.performerOptionText}>{item.name}</Text>
-                      </TouchableOpacity>
-                    )}
-                    ListEmptyComponent={
-                      performerSearchText.length > 0 ? (
-                        <Text style={styles.emptyText}>No performers found</Text>
-                      ) : (
-                        <Text style={styles.emptyText}>Start typing to search...</Text>
-                      )
-                    }
-                  />
-                  <TouchableOpacity
-                    style={styles.closePickerButton}
-                    onPress={() => {
-                      setShowPerformerPicker(false);
-                      setPerformerSearchText('');
-                    }}
-                  >
-                    <Text style={styles.closePickerButtonText}>Close</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            </Modal>
+              {onNavigateToPerformers && (
+                <TouchableOpacity
+                  style={styles.editButton}
+                  onPress={onNavigateToPerformers}
+                >
+                  <Text style={styles.editButtonText}>Edit</Text>
+                </TouchableOpacity>
+              )}
+            </View>
           </View>
         )}
 
         <View style={styles.field}>
           <Text style={styles.sectionTitle}>TV Settings</Text>
           <View style={styles.subField}>
-            <Text style={styles.label}>TV Theme</Text>
-            <View style={styles.radioGroup}>
-              <TouchableOpacity
-                style={[styles.radio, tvTheme === 'light' && styles.radioSelected]}
-                onPress={() => setTvTheme('light')}
-              >
-                <Text style={styles.radioText}>Light</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.radio, tvTheme === 'dark' && styles.radioSelected]}
-                onPress={() => setTvTheme('dark')}
-              >
-                <Text style={styles.radioText}>Dark</Text>
-              </TouchableOpacity>
+            <View style={styles.switchRow}>
+              <Text style={styles.label}>TV Theme</Text>
+              <View style={styles.toggleWithLabels}>
+                <Text style={styles.themeLabel}>L</Text>
+                <View style={{ marginHorizontal: 12 }}>
+                  <Switch
+                    value={tvTheme === 'dark'}
+                    onValueChange={(value) => setTvTheme(value ? 'dark' : 'light')}
+                  />
+                </View>
+                <Text style={styles.themeLabel}>D</Text>
+              </View>
             </View>
           </View>
           {hiModuleSelected(['Voting', 'Extended Voting']) && (
             <View style={styles.subField}>
               <View style={styles.switchRow}>
                 <Text style={styles.label}>Show Score on TV</Text>
-                <Switch
-                  value={tvScoreVisible}
-                  onValueChange={setTvScoreVisible}
-                />
+                <View style={styles.toggleWithLabels}>
+                  <Text style={styles.themeLabel}>N</Text>
+                  <View style={{ marginHorizontal: 12 }}>
+                    <Switch
+                      value={tvScoreVisible}
+                      onValueChange={setTvScoreVisible}
+                    />
+                  </View>
+                  <Text style={styles.themeLabel}>Y</Text>
+                </View>
               </View>
             </View>
           )}
@@ -517,7 +690,7 @@ const ShowFormPage2 = ({ showId, page1Data, onBack, onSave, onNavigateToMessagin
               <Text style={styles.actionButtonText}>Messaging Customization</Text>
             </TouchableOpacity>
           )}
-          {(hiModuleSelected(['Messaging']) || (showId && loadedShow?.custom_messages && loadedShow.custom_messages.length > 0)) && onNavigateToSlides && (
+          {(hiModuleSelected(['Messaging']) || (showId && loadedShow?.custom_messages && loadedShow.custom_messages.length > 0) || (copyShowData?.custom_messages && copyShowData.custom_messages.length > 0)) && onNavigateToSlides && (
             <TouchableOpacity
               style={styles.actionButton}
               onPress={onNavigateToSlides}
@@ -536,12 +709,16 @@ const ShowFormPage2 = ({ showId, page1Data, onBack, onSave, onNavigateToMessagin
             <Text style={styles.deleteButtonText}>Delete</Text>
           </TouchableOpacity>
           <TouchableOpacity
-            style={[styles.button, styles.saveButton, saving && styles.buttonDisabled]}
+            style={[
+              styles.button, 
+              styles.saveButton,
+              (saving || hasOverlap) && styles.buttonDisabled
+            ]}
             onPress={handleSave}
-            disabled={saving}
+            disabled={saving || hasOverlap}
           >
             <Text style={styles.saveButtonText}>
-              {saving ? 'Saving...' : 'Save Show'}
+              {saving ? 'Saving...' : 'Save/Exit'}
             </Text>
           </TouchableOpacity>
         </View>
@@ -557,21 +734,6 @@ const styles = StyleSheet.create({
   },
   form: {
     padding: 20,
-  },
-  titleRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 30,
-  },
-  title: {
-    fontSize: 28,
-    fontWeight: 'bold',
-    flex: 1,
-  },
-  logo: {
-    width: 48,
-    height: 48,
   },
   sectionTitle: {
     fontSize: 20,
@@ -641,90 +803,55 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
   },
-  performerList: {
-    marginTop: 12,
-  },
-  performerItem: {
+  performersContainer: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: 12,
-    backgroundColor: '#f5f5f5',
-    borderRadius: 8,
+    alignItems: 'flex-start',
     marginBottom: 8,
   },
-  performerName: {
-    fontSize: 16,
+  performersTextContainer: {
     flex: 1,
+    maxWidth: '75%',
+    marginRight: 10,
   },
-  removeButton: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    backgroundColor: '#ff4444',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  removeButtonText: {
-    color: '#fff',
-    fontSize: 20,
-    fontWeight: 'bold',
-  },
-  pickerModal: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    zIndex: 1000,
-  },
-  pickerContent: {
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    padding: 20,
-    width: '90%',
-    maxHeight: '70%',
-  },
-  pickerTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    marginBottom: 12,
-  },
-  searchInput: {
-    borderWidth: 1,
-    borderColor: '#ddd',
-    borderRadius: 8,
-    padding: 12,
+  performersText: {
     fontSize: 16,
-    marginBottom: 12,
+    color: '#333',
   },
-  performerOption: {
-    padding: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#eee',
+  performersLabel: {
+    fontWeight: '600',
+    fontSize: 19.2, // 20% larger than 16
+    color: '#4CAF50', // Green
   },
-  performerOptionText: {
+  performersList: {
+    fontWeight: 'normal',
     fontSize: 16,
   },
-  emptyText: {
-    textAlign: 'center',
-    color: '#999',
-    padding: 20,
-  },
-  closePickerButton: {
-    backgroundColor: '#f0f0f0',
-    padding: 12,
-    borderRadius: 8,
-    alignItems: 'center',
-    marginTop: 12,
-  },
-  closePickerButtonText: {
+  hostLabel: {
+    color: '#007AFF', // Blue
     fontSize: 16,
     fontWeight: '600',
-    color: '#333',
+  },
+  numberLabel: {
+    color: '#007AFF', // Blue
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  hlLabel: {
+    color: '#FF0000', // Red
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  editButton: {
+    backgroundColor: COLORS.TEAL,
+    paddingHorizontal: 15,
+    paddingVertical: 8,
+    borderRadius: 6,
+  },
+  editButtonText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
   },
   radioGroup: {
     flexDirection: 'row',
@@ -751,6 +878,16 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
   },
+  toggleWithLabels: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  themeLabel: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#333',
+    minWidth: 20,
+  },
   buttonRow: {
     flexDirection: 'row',
     marginTop: 20,
@@ -770,8 +907,12 @@ const styles = StyleSheet.create({
     backgroundColor: '#007AFF',
     marginLeft: 10,
   },
+  saveButtonFullWidth: {
+    marginLeft: 0,
+  },
   buttonDisabled: {
     backgroundColor: '#ccc',
+    opacity: 0.6,
   },
   deleteButtonText: {
     color: '#d32f2f',
@@ -783,8 +924,21 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
   },
+  warningContainer: {
+    backgroundColor: '#fff3cd',
+    borderColor: '#ffc107',
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: 15,
+    marginTop: 10,
+  },
+  warningText: {
+    color: '#856404',
+    fontSize: 14,
+    lineHeight: 20,
+  },
   actionButton: {
-    backgroundColor: '#007AFF',
+    backgroundColor: COLORS.TEAL,
     padding: 15,
     borderRadius: 8,
     alignItems: 'center',

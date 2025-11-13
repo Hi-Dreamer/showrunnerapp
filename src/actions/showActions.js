@@ -45,6 +45,34 @@ export const loadShows = (dateFilter = 'upcoming', page = 1) => {
   };
 };
 
+export const expiredShowsLoadStart = () => ({
+  type: 'EXPIRED_SHOWS_LOAD_START',
+});
+
+export const expiredShowsLoadSuccess = (shows) => ({
+  type: 'EXPIRED_SHOWS_LOAD_SUCCESS',
+  payload: shows,
+});
+
+export const expiredShowsLoadFailure = (error) => ({
+  type: 'EXPIRED_SHOWS_LOAD_FAILURE',
+  payload: error,
+});
+
+export const loadExpiredShows = (page = 1) => {
+  return async (dispatch) => {
+    dispatch(expiredShowsLoadStart());
+    try {
+      const api = ApiService.getClient();
+      // Use 'past' as the date_filter to match the web interface's "Past Shows" tab
+      const shows = await api.shows.get({ date_filter: 'past', page });
+      dispatch(expiredShowsLoadSuccess(shows));
+    } catch (error) {
+      dispatch(expiredShowsLoadFailure(error.message));
+    }
+  };
+};
+
 export const loadShow = (showId) => {
   return async (dispatch) => {
     try {
@@ -111,8 +139,9 @@ export const createShow = (showData) => {
 
       const show = await response.json();
       dispatch(setCurrentShow(show));
-      // Reload shows list
-      dispatch(loadShows());
+      // Reload both active and expired shows lists
+      dispatch(loadShows('upcoming'));
+      dispatch(loadExpiredShows());
       return { success: true, show };
     } catch (error) {
       const errorMessage = await ErrorHandler.handleError(error, 'createShow');
@@ -138,6 +167,27 @@ export const updateShow = (showId, showData) => {
         cleanData.performer_ids = showData.performer_ids;
       } else {
         cleanData.performer_ids = null;
+      }
+      
+      // Include hi_modules/hi_module_ids if provided (for updating modules on existing shows)
+      // Backend might expect hi_module_ids instead of hi_modules for updates
+      // Try both to ensure compatibility
+      const modulesToUpdate = showData.hi_modules !== undefined ? showData.hi_modules : showData.hi_module_ids;
+      
+      if (modulesToUpdate !== undefined) {
+        if (Array.isArray(modulesToUpdate) && modulesToUpdate.length > 0) {
+          // Try both parameter names - backend might expect hi_module_ids
+          cleanData.hi_module_ids = modulesToUpdate;
+          cleanData.hi_modules = modulesToUpdate;
+        } else if (Array.isArray(modulesToUpdate)) {
+          // Empty array - still include it
+          cleanData.hi_module_ids = [];
+          cleanData.hi_modules = [];
+        } else {
+          // Not an array - convert to array if possible, otherwise empty array
+          cleanData.hi_module_ids = [];
+          cleanData.hi_modules = [];
+        }
       }
       
       // Ensure boolean values are actual booleans, not strings
@@ -185,6 +235,25 @@ export const updateShow = (showId, showData) => {
           if (xhr.status >= 200 && xhr.status < 300) {
             try {
               const response = JSON.parse(xhr.responseText);
+              // Check if response contains errors (Rails validation errors)
+              if (response.errors && Object.keys(response.errors).length > 0) {
+                // Extract first error message
+                const firstErrorKey = Object.keys(response.errors)[0];
+                const firstError = Array.isArray(response.errors[firstErrorKey]) 
+                  ? response.errors[firstErrorKey][0] 
+                  : response.errors[firstErrorKey];
+                const error = new Error(firstError || 'Validation error');
+                error.response = { status: xhr.status, data: xhr.responseText };
+                reject(error);
+                return;
+              }
+              // Check if response has an error field
+              if (response.error) {
+                const error = new Error(response.error);
+                error.response = { status: xhr.status, data: xhr.responseText };
+                reject(error);
+                return;
+              }
               resolve(response);
             } catch (e) {
               console.error('Failed to parse JSON response:', xhr.responseText.substring(0, 200));
@@ -221,14 +290,16 @@ export const updateShow = (showId, showData) => {
         };
         
         // Send JSON stringified data
+        // Rails typically expects flat JSON for API endpoints (not nested under 'show')
         const jsonBody = JSON.stringify(cleanData);
         xhr.send(jsonBody);
       });
       const show = await Promise.race([updatePromise, timeoutPromise]);
       
       dispatch(setCurrentShow(show));
-      // Reload shows list
-      dispatch(loadShows());
+      // Reload both active and expired shows lists
+      dispatch(loadShows('upcoming'));
+      dispatch(loadExpiredShows());
       return { success: true, show };
     } catch (error) {
       const errorMessage = await ErrorHandler.handleError(error, 'updateShow');
@@ -258,11 +329,45 @@ export const deleteShow = (showId) => {
 
       const result = await response.json();
       
-      // Reload shows list
-      dispatch(loadShows());
+      // Reload both active and expired shows lists
+      dispatch(loadShows('upcoming'));
+      dispatch(loadExpiredShows());
       return { success: true };
     } catch (error) {
       const errorMessage = await ErrorHandler.handleError(error, 'deleteShow');
+      return { success: false, error: errorMessage };
+    }
+  };
+};
+
+export const copyShow = (showId) => {
+  return async (dispatch) => {
+    try {
+      // Load the show to copy
+      const show = await dispatch(loadShow(showId));
+      if (!show) {
+        throw new Error('Show not found');
+      }
+
+      // Prepare data for the new show (copy all fields except id)
+      const { id, created_at, updated_at, ...showData } = show;
+      
+      // Modify the name to indicate it's a copy
+      const copyData = {
+        ...showData,
+        name: `${showData.name} (Copy)`,
+      };
+
+      // Create the new show using createShow action
+      const result = await dispatch(createShow(copyData));
+      
+      if (result.success) {
+        return { success: true, show: result.show };
+      } else {
+        throw new Error(result.error || 'Failed to copy show');
+      }
+    } catch (error) {
+      const errorMessage = await ErrorHandler.handleError(error, 'copyShow');
       return { success: false, error: errorMessage };
     }
   };

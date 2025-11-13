@@ -4,7 +4,7 @@ import { useDispatch, useSelector } from 'react-redux';
 import { updateShow, loadShow } from '../actions/showActions';
 import { DateUtils } from '../utils/dateUtils';
 
-const ShowFormPage3 = ({ showId, page1Data, onBack, onSave }) => {
+const ShowFormPage3 = ({ showId, page1Data, copyShowData, onBack, onSave }) => {
   const dispatch = useDispatch();
   const { currentShow, hiModules } = useSelector((state) => state.show);
 
@@ -51,8 +51,20 @@ const ShowFormPage3 = ({ showId, page1Data, onBack, onSave }) => {
         }
         setLoading(false);
       });
+    } else if (copyShowData) {
+      // Pre-populate from copyShowData when copying
+      setLoadedShow(copyShowData);
+      setTextPerformingTv(copyShowData.text_performing_tv || '');
+      setTextPerformingMobile(copyShowData.text_performing_mobile || '');
+      setTextVotingPromptTv(copyShowData.text_voting_prompt_tv || '');
+      setTextVotingPromptMobile(copyShowData.text_voting_prompt_mobile || '');
+      setTextVotingDoneMobile(copyShowData.text_voting_done_mobile || '');
+      setTextVotingWinnerTv(copyShowData.text_voting_winner_tv || '');
+      setTextVotingWinnerMobile(copyShowData.text_voting_winner_mobile || '');
+      setTextDrawGetReadyTv(copyShowData.text_draw_get_ready_tv || '');
+      setTextDrawGetReadyMobile(copyShowData.text_draw_get_ready_mobile || '');
     }
-  }, [showId, dispatch]);
+  }, [showId, copyShowData, dispatch]);
 
   const handleSave = async () => {
     setSaving(true);
@@ -82,7 +94,16 @@ const ShowFormPage3 = ({ showId, page1Data, onBack, onSave }) => {
     };
 
     try {
-      const result = await dispatch(updateShow(showId, showData));
+      let result;
+      if (showId) {
+        // Updating existing show
+        result = await dispatch(updateShow(showId, showData));
+      } else {
+        // This shouldn't happen for Page 3, but handle it gracefully
+        Alert.alert('Error', 'Cannot save messaging for a show that hasn\'t been created yet. Please save the show details first.');
+        setSaving(false);
+        return;
+      }
       setSaving(false);
 
       if (result.success) {

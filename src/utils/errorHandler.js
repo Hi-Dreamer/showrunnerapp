@@ -79,18 +79,40 @@ export class ErrorHandler {
       return error;
     }
 
-    // If it's a Response object, parse it
-    if (error && typeof error.response === 'object' && error.response.status) {
-      return await this.parseErrorResponse(error.response);
-    }
-
-    // If it has a message property, use it
+    // If it has a message property, use it (check this early)
     if (error && error.message) {
       return error.message;
     }
 
-    // If it has a response property (another-rest-client style)
-    if (error && error.response) {
+    // If it's a Response object with a text method, parse it
+    if (error && typeof error.response === 'object' && error.response.status && typeof error.response.text === 'function') {
+      try {
+        const parsed = await this.parseErrorResponse(error.response);
+        return parsed.message;
+      } catch (e) {
+        // Fall through
+      }
+    }
+
+    // If it has a response property with data (XMLHttpRequest style)
+    if (error && error.response && error.response.data) {
+      // Try to extract error from response data
+      const data = error.response.data;
+      if (typeof data === 'string') {
+        // Try to parse as JSON
+        try {
+          const jsonData = JSON.parse(data);
+          return jsonData.errors?.[0]?.message || jsonData.error || jsonData.message || data.substring(0, 200);
+        } catch (e) {
+          // Not JSON, return first part of string
+          return data.substring(0, 200);
+        }
+      }
+      return String(data);
+    }
+
+    // If it has a response property (another-rest-client style) with text method
+    if (error && error.response && typeof error.response.text === 'function') {
       try {
         const parsed = await this.parseErrorResponse(error.response);
         return parsed.message;

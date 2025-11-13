@@ -1,10 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, Alert } from 'react-native';
 import { useDispatch, useSelector } from 'react-redux';
-import { createShow, loadShow, loadVenues, loadHiModules } from '../actions/showActions';
+import { createShow, updateShow, loadShow, loadVenues, loadHiModules, loadShows, loadExpiredShows } from '../actions/showActions';
 import { DateUtils } from '../utils/dateUtils';
+import ApiService from '../services/api';
+import PageHeader from './PageHeader';
+import { COLORS } from '../constants/theme';
 
-const ShowFormPage1 = ({ showId, onCancel, onContinue }) => {
+const ShowFormPage1 = ({ showId, onCancel, onContinue, isBasicInfoEdit }) => {
   const dispatch = useDispatch();
   const { currentShow, venues, hiModules } = useSelector((state) => state.show);
   const { user } = useSelector((state) => state.auth);
@@ -15,17 +18,55 @@ const ShowFormPage1 = ({ showId, onCancel, onContinue }) => {
   const [selectedHiModules, setSelectedHiModules] = useState([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [loadedShow, setLoadedShow] = useState(null); // Store loaded show data for basic info edit
+  const [extendedVotingShowsCount, setExtendedVotingShowsCount] = useState(0);
 
   useEffect(() => {
     // Load venues and hi_modules
     dispatch(loadVenues());
     dispatch(loadHiModules());
 
+    // Load active shows to count Extended Voting shows
+    const loadExtendedVotingCount = async () => {
+      try {
+        const api = ApiService.getClient();
+        const activeShows = await api.shows.get({ date_filter: 'upcoming', page: 1 });
+        
+        // Count shows that are > 12 hours (Extended Voting shows)
+        // Exclude the current show if editing
+        let count = 0;
+        if (activeShows && Array.isArray(activeShows)) {
+          for (const show of activeShows) {
+            // Skip the current show if editing
+            if (showId && show.id === showId) {
+              continue;
+            }
+            
+            if (show.show_datetime && show.show_end_datetime) {
+              const startDate = new Date(show.show_datetime);
+              const endDate = new Date(show.show_end_datetime);
+              const durationHours = (endDate - startDate) / (1000 * 60 * 60);
+              if (durationHours > 12) {
+                count++;
+              }
+            }
+          }
+        }
+        setExtendedVotingShowsCount(count);
+      } catch (error) {
+        console.error('Error loading extended voting shows count:', error);
+        setExtendedVotingShowsCount(0);
+      }
+    };
+
+    loadExtendedVotingCount();
+
     // If editing, load the show
     if (showId) {
       setLoading(true);
       dispatch(loadShow(showId)).then((show) => {
         if (show) {
+          setLoadedShow(show); // Store the loaded show for use when saving
           setName(show.name || '');
           setCode(show.code || '');
           setVenueId(show.venue_id || -1);
@@ -41,10 +82,12 @@ const ShowFormPage1 = ({ showId, onCancel, onContinue }) => {
     if (!hiModules || hiModules.length === 0) return [];
     
     const extendedVotingShowsAllowed = user?.extended_voting_shows_allowed || 0;
+    const extendedVotingShowsRemaining = extendedVotingShowsAllowed - extendedVotingShowsCount;
     
     return hiModules.filter(module => {
       if (module.name === 'Extended Voting') {
-        return extendedVotingShowsAllowed > 0;
+        // Only show if user has permission AND has shows remaining
+        return extendedVotingShowsAllowed > 0 && extendedVotingShowsRemaining > 0;
       }
       return true;
     });
@@ -121,13 +164,68 @@ const ShowFormPage1 = ({ showId, onCancel, onContinue }) => {
         Alert.alert('Error', error.message || 'Failed to create show');
       }
     } else {
-      // For editing, just pass data to Page 2
-      onContinue(showId, {
-        name,
-        code,
-        venueId,
-        selectedHiModules,
-      });
+      // For editing
+      if (isBasicInfoEdit) {
+        // Basic info edit mode - save and exit
+        setSaving(true);
+        try {
+          // Use loadedShow instead of currentShow from Redux (more reliable)
+          const showToUpdate = loadedShow || currentShow;
+          
+          const showData = {
+            name: name.trim(),
+            code: code.trim() || null,
+            venue_id: venueId > 0 ? venueId : null,
+            hi_modules: selectedHiModules, // Include the updated modules
+            hi_module_ids: selectedHiModules, // Also try hi_module_ids (backend might expect this)
+            // Preserve existing dates and other fields
+            show_datetime: showToUpdate?.show_datetime ? DateUtils.formatForAPI(new Date(showToUpdate.show_datetime)) : null,
+            show_end_datetime: showToUpdate?.show_end_datetime ? DateUtils.formatForAPI(new Date(showToUpdate.show_end_datetime)) : null,
+            tv_theme: showToUpdate?.tv_theme || 'light',
+            tv_score_visible: showToUpdate?.tv_score_visible || false,
+            performer_ids: showToUpdate?.performer_ids || null,
+            // Preserve messaging fields if they exist
+            text_performing_tv: showToUpdate?.text_performing_tv || null,
+            text_performing_mobile: showToUpdate?.text_performing_mobile || null,
+            text_voting_prompt_tv: showToUpdate?.text_voting_prompt_tv || null,
+            text_voting_prompt_mobile: showToUpdate?.text_voting_prompt_mobile || null,
+            text_voting_done_mobile: showToUpdate?.text_voting_done_mobile || null,
+            text_voting_winner_tv: showToUpdate?.text_voting_winner_tv || null,
+            text_voting_winner_mobile: showToUpdate?.text_voting_winner_mobile || null,
+            text_draw_get_ready_tv: showToUpdate?.text_draw_get_ready_tv || null,
+            text_draw_get_ready_mobile: showToUpdate?.text_draw_get_ready_mobile || null,
+          };
+
+          const result = await dispatch(updateShow(showId, showData));
+          setSaving(false);
+
+          if (result.success) {
+            // Reload the show to get updated hi_module_ids (backend might not return it in update response)
+            await dispatch(loadShow(showId));
+            
+            // Refresh shows list
+            dispatch(loadShows('upcoming'));
+            dispatch(loadExpiredShows());
+            // Exit back to shows list
+            if (onCancel) {
+              onCancel();
+            }
+          } else {
+            Alert.alert('Error', result.error || 'Failed to update show');
+          }
+        } catch (error) {
+          setSaving(false);
+          Alert.alert('Error', error.message || 'Failed to update show');
+        }
+      } else {
+        // Full edit mode - just pass data to Page 2
+        onContinue(showId, {
+          name,
+          code,
+          venueId,
+          selectedHiModules,
+        });
+      }
     }
   };
 
@@ -144,9 +242,25 @@ const ShowFormPage1 = ({ showId, onCancel, onContinue }) => {
   return (
     <ScrollView style={styles.container}>
       <View style={styles.form}>
-        <Text style={styles.title}>
-          {showId ? 'Edit Show - Basic Info' : 'Create New Show - Basic Info'}
-        </Text>
+        {!showId ? (
+          <PageHeader
+            title="Create New Show"
+            subtitle="You'll need a Show Name and at least 1 Feature to continue."
+            subtitleColor={COLORS.TEAL}
+            showLogo={true}
+            logoSize="medium"
+            titleFontSize="medium"
+          />
+        ) : (
+          <PageHeader
+            title="Show Elements"
+            subtitle="Change what you want, you'll still need a Show Name & 1 Feature to Save."
+            subtitleColor={COLORS.TEAL}
+            showLogo={true}
+            logoSize="medium"
+            titleFontSize="medium"
+          />
+        )}
 
         <View style={styles.field}>
           <Text style={styles.label}>Show Name *</Text>
@@ -159,7 +273,7 @@ const ShowFormPage1 = ({ showId, onCancel, onContinue }) => {
         </View>
 
         <View style={styles.field}>
-          <Text style={styles.label}>Show Code (optional)</Text>
+          <Text style={styles.label}>Show Code For Audience Entry</Text>
           <TextInput
             style={styles.input}
             value={code}
@@ -170,7 +284,7 @@ const ShowFormPage1 = ({ showId, onCancel, onContinue }) => {
         </View>
 
         <View style={styles.field}>
-          <Text style={styles.label}>Venue (optional)</Text>
+          <Text style={styles.label}>Venue Name for Geolocated Audience Entry</Text>
           <View style={styles.pickerContainer}>
             <TouchableOpacity 
               style={styles.picker}
@@ -201,9 +315,9 @@ const ShowFormPage1 = ({ showId, onCancel, onContinue }) => {
         </View>
 
         <View style={styles.field}>
-          <Text style={styles.label}>Features * (select at least one)</Text>
-          <Text style={styles.subLabel}>
-            Please pick the features you will need to support on this show
+          <Text style={styles.label}>Your Show Features *</Text>
+          <Text style={styles.subLabelTeal}>
+            Select at least one feature for your show.
           </Text>
           {filteredModules.map((module) => {
             const moduleName = module.name === 'Messaging' ? 'Slides' : module.name;
@@ -239,7 +353,7 @@ const ShowFormPage1 = ({ showId, onCancel, onContinue }) => {
             disabled={saving}
           >
             <Text style={styles.continueButtonText}>
-              {saving ? 'Saving...' : 'Continue'}
+              {saving ? 'Saving...' : (isBasicInfoEdit ? 'Save/Exit' : 'Continue')}
             </Text>
           </TouchableOpacity>
         </View>
@@ -256,11 +370,6 @@ const styles = StyleSheet.create({
   form: {
     padding: 20,
   },
-  title: {
-    fontSize: 28,
-    fontWeight: 'bold',
-    marginBottom: 30,
-  },
   field: {
     marginBottom: 25,
   },
@@ -273,6 +382,11 @@ const styles = StyleSheet.create({
   subLabel: {
     fontSize: 14,
     color: '#666',
+    marginBottom: 12,
+  },
+  subLabelTeal: {
+    fontSize: 14,
+    color: COLORS.TEAL,
     marginBottom: 12,
   },
   input: {

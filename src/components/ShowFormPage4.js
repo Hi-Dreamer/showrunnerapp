@@ -3,6 +3,7 @@ import { View, Text, TouchableOpacity, StyleSheet, Alert, FlatList, Image } from
 import { useDispatch } from 'react-redux';
 import { loadShow } from '../actions/showActions';
 import ApiService from '../services/api';
+import { COLORS } from '../constants/theme';
 
 const ShowFormPage4 = forwardRef(({ showId, initialSlides, onBack, onEditSlide, onAddSlide, onSaveSlides }, ref) => {
   const dispatch = useDispatch();
@@ -125,14 +126,6 @@ const ShowFormPage4 = forwardRef(({ showId, initialSlides, onBack, onEditSlide, 
         <View style={styles.headerLeft}>
           <Text style={styles.title}>Slides</Text>
         </View>
-        <View style={styles.headerCenter}>
-          <TouchableOpacity
-            style={styles.addButton}
-            onPress={handleAddSlide}
-          >
-            <Text style={styles.addButtonText}>+ Add New</Text>
-          </TouchableOpacity>
-        </View>
         <View style={styles.headerRight}>
           <Image 
             source={require('../../assets/hi_logo.png')} 
@@ -197,6 +190,12 @@ const ShowFormPage4 = forwardRef(({ showId, initialSlides, onBack, onEditSlide, 
 
       <View style={styles.footer}>
         <TouchableOpacity
+          style={styles.addButton}
+          onPress={handleAddSlide}
+        >
+          <Text style={styles.addButtonText}>+ Add New</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
           style={[styles.button, styles.backButton, saving && styles.buttonDisabled]}
           onPress={handleSave}
           disabled={saving}
@@ -225,10 +224,6 @@ const styles = StyleSheet.create({
   headerLeft: {
     flex: 1,
   },
-  headerCenter: {
-    flex: 1,
-    alignItems: 'center',
-  },
   headerRight: {
     flex: 1,
     alignItems: 'flex-end',
@@ -238,10 +233,11 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
   addButton: {
-    backgroundColor: '#007AFF',
+    backgroundColor: COLORS.TEAL,
     paddingHorizontal: 20,
     paddingVertical: 10,
     borderRadius: 8,
+    marginBottom: 10,
   },
   logo: {
     width: 48,
