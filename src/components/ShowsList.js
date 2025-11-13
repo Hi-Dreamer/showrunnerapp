@@ -4,12 +4,14 @@ import { useDispatch, useSelector } from 'react-redux';
 import { loadShows } from '../actions/showActions';
 import { logoutUser } from '../actions/authActions';
 import ShowForm from './ShowForm';
+import RunShow from './RunShow';
 
 const ShowsList = () => {
   const dispatch = useDispatch();
   const { shows, loading } = useSelector((state) => state.show);
   const { user } = useSelector((state) => state.auth);
   const [showForm, setShowForm] = useState(null); // null, 'new', or showId number
+  const [runShowId, setRunShowId] = useState(null); // null or showId number
 
   useEffect(() => {
     dispatch(loadShows());
@@ -28,8 +30,11 @@ const ShowsList = () => {
   };
 
   const handleRunShow = (showId) => {
-    // TODO: Navigate to RunShow component (Phase 2)
-    Alert.alert('Run Show', `Run show functionality will be implemented in Phase 2. Show ID: ${showId}`);
+    setRunShowId(showId);
+  };
+
+  const handleRunShowBack = () => {
+    setRunShowId(null);
   };
 
   const handleFormCancel = () => {
@@ -40,6 +45,15 @@ const ShowsList = () => {
     setShowForm(null);
     dispatch(loadShows()); // Refresh the list
   };
+
+  if (runShowId) {
+    return (
+      <RunShow
+        showId={runShowId}
+        onBack={handleRunShowBack}
+      />
+    );
+  }
 
   if (showForm) {
     return (

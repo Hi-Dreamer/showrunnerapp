@@ -27,5 +27,14 @@ export const API_ENDPOINTS = {
 
   // HI Modules
   HI_MODULES: `${API_BASE_URL}/hi_modules`,
+
+  // Run Show
+  RUN_SHOW: (showId) => `${API_BASE_URL}/shows/${showId}/run`,
+  SET_SHOW_STATE: (showId) => `${API_BASE_URL}/shows/${showId}/set_state`,
+  RESET_PICKS: (showId) => `${API_BASE_URL}/shows/${showId}/reset_picks`,
+  SET_TIMES: (showId) => `${API_BASE_URL}/shows/${showId}/set_times`,
+  
+  // Channels
+  CHANNEL: (id) => `${API_BASE_URL}/channels/${id}`,
 };
 
