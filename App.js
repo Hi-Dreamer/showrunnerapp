@@ -25,7 +25,7 @@ const AppContent = () => {
   const dispatch = useDispatch();
   const { isAuthenticated, loading } = useSelector((state) => state.auth);
   const [fontsLoaded] = useFonts({
-    'Bitink': require('./assets/Fonts/Bitink/Bitink.ttf'),
+    'Bitink': require('./assets/Fonts/Bitink.ttf'),
   });
 
   useEffect(() => {
