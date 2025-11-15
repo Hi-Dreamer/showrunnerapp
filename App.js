@@ -26,6 +26,7 @@ const AppContent = () => {
   const { isAuthenticated, loading } = useSelector((state) => state.auth);
   const [fontsLoaded] = useFonts({
     'Bitink': require('./assets/Fonts/Bitink.ttf'),
+    'FredokaOne-Regular': require('./assets/Fonts/FredokaOne-Regular.ttf'),
   });
 
   useEffect(() => {
