@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, FlatList, TouchableOpacity, StyleSheet, Alert, ScrollView, Dimensions } from 'react-native';
 import { useDispatch, useSelector } from 'react-redux';
-import { loadShows, loadExpiredShows, loadShow, deleteShow } from '../actions/showActions';
+import { loadShows, loadExpiredShows, loadShow, deleteShow, loadVenues } from '../actions/showActions';
 import ApiService from '../services/api';
 import { logoutUser } from '../actions/authActions';
 import ShowForm from './ShowForm';
@@ -13,7 +13,7 @@ const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 const ShowsList = () => {
   const dispatch = useDispatch();
-  const { activeShows, expiredShows, loading, loadingExpired } = useSelector((state) => state.show);
+  const { activeShows, expiredShows, loading, loadingExpired, venues } = useSelector((state) => state.show);
   const { user } = useSelector((state) => state.auth);
   const [showForm, setShowForm] = useState(null); // null, 'new', or showId number
   const [runShowId, setRunShowId] = useState(null); // null or showId number
@@ -23,6 +23,8 @@ const ShowsList = () => {
     // Load both active and expired shows
     dispatch(loadShows('upcoming'));
     dispatch(loadExpiredShows());
+    // Load venues to display venue names
+    dispatch(loadVenues());
   }, [dispatch]);
 
   const handleLogout = () => {
@@ -206,7 +208,15 @@ const ShowsList = () => {
                 activeOpacity={0.7}
               >
                 <Text style={styles.showName}>{item.name}</Text>
-                <Text style={styles.showCode}>Code: {item.code || 'N/A'}</Text>
+                {(() => {
+                  // Show venue name if venue is selected, otherwise show code
+                  const venue = item.venue_id && venues ? venues.find(v => v.id === item.venue_id) : null;
+                  if (venue) {
+                    return <Text style={styles.showCode}>Venue: {venue.name}</Text>;
+                  } else {
+                    return <Text style={styles.showCode}>Code: {item.code || 'N/A'}</Text>;
+                  }
+                })()}
                 {item.show_datetime && (
                   <Text style={styles.showDate}>
                     {new Date(item.show_datetime).toLocaleString()}

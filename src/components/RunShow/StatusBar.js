@@ -93,14 +93,25 @@ const StatusBar = ({ activeModule }) => {
         };
       
       case 'performing':
-        const performerTime = activePerformerId && setTimes && Array.isArray(setTimes)
-          ? setTimes.find(st => st.performer_id === activePerformerId)
-          : null;
+        // When actively performing, set_time is not returned by the API
+        // Use elapsedTime (calculated from set_start) for current session time
+        let setTimeDisplay = null;
+        if (elapsedTime !== null && elapsedTime !== undefined) {
+          setTimeDisplay = formatTime(elapsedTime);
+        } else {
+          // Fallback: check if set_time exists (shouldn't happen when actively performing)
+          const performerTime = activePerformerId && setTimes && Array.isArray(setTimes)
+            ? setTimes.find(st => st.performer_id === activePerformerId)
+            : null;
+          if (performerTime && performerTime.set_time) {
+            setTimeDisplay = performerTime.set_time;
+          }
+        }
         return {
           statusText: activePerformerName 
             ? `Now Performing - ${activePerformerName}` 
             : 'Now Performing',
-          statusInfo: performerTime ? `Set Time: ${performerTime.set_time}` : null,
+          statusInfo: setTimeDisplay ? `Set Time: ${setTimeDisplay}` : null,
         };
       
       case 'voting':
@@ -190,15 +201,21 @@ const StatusBar = ({ activeModule }) => {
       
       // Get total accumulated time from previous sessions
       // Expected API response format from GET /shows/:id/set_times:
-      // [
+      // When actively performing:
       //   {
       //     "performer_id": 1,
-      //     "set_time": "05:23",        // Current session time
-      //     "set_start": "2024-01-15T10:30:00Z",
-      //     "total_time": "12:45"       // REQUIRED: Total accumulated time across all sessions
+      //     "set_start": "2024-01-15T10:30:00Z",  // Timestamp when performance started
+      //     "total_time": "12:45"                 // Total from previous completed sessions only
+      //     // Note: set_time is NOT returned when actively performing
       //   }
-      // ]
-      // See BACKEND_API_SPEC_SET_TIMES.md for full specification
+      // When set has ended (not actively performing):
+      //   {
+      //     "performer_id": 1,
+      //     "set_time": "05:23",                  // Completed session time
+      //     "total_time": "18:08"                 // Total including the completed session
+      //     // Note: set_start and set_end are cleared after session ends
+      //   }
+      // The client calculates current session time from set_start to now and adds it to total_time
       if (activePerformerId && setTimes && Array.isArray(setTimes)) {
         const performerTime = setTimes.find(st => st.performer_id === activePerformerId);
         if (performerTime) {
@@ -209,7 +226,6 @@ const StatusBar = ({ activeModule }) => {
             totalTimeMs = previousTotalMs + currentTimeMs;
           } else {
             // No total_time field, so this is first session - total equals current
-            // TODO: Remove this fallback once backend implements total_time field
             totalTimeMs = currentTimeMs;
           }
         }

@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, Image, Dimensions } from 'react-native';
 import { useDispatch, useSelector } from 'react-redux';
-import { loadRunShowData, runShowReset, runShowUpdateElapsedTime } from '../actions/runShowActions';
+import { loadRunShowData, runShowReset, runShowUpdateElapsedTime, runShowUpdateSetTimes } from '../actions/runShowActions';
 import ShowRunnerChannelService from '../services/showRunnerChannel';
 import ApiService from '../services/api';
 import { API_ENDPOINTS } from '../constants/apiEndpoints';
@@ -191,7 +191,11 @@ const RunShow = ({ showId, onBack }) => {
           
           if (response.ok) {
             const setTimes = await response.json();
+            
+            // IMPORTANT: Dispatch set_times to Redux so StatusBar can access total_time
             if (setTimes && Array.isArray(setTimes)) {
+              dispatch(runShowUpdateSetTimes(setTimes));
+              
               const performerSetTime = setTimes.find(st => st.performer_id === activePerformerId);
               if (performerSetTime && performerSetTime.set_start) {
                 const startTimestamp = new Date(performerSetTime.set_start).getTime();
