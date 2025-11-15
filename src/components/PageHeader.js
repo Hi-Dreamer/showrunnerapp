@@ -66,7 +66,7 @@ const styles = StyleSheet.create({
   title: {
     fontWeight: 'bold',
     marginBottom: 8,
-    fontFamily: FONTS.BITINK,
+    fontFamily: FONTS.TITLE,
   },
   subtitle: {
     fontSize: FONT_SIZES.SMALL,

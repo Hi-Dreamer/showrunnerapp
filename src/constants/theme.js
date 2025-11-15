@@ -22,6 +22,8 @@ export const COLORS = {
 // Fonts
 export const FONTS = {
   BITINK: 'Bitink',
+  FREDOKA_ONE: 'FredokaOne-Regular',
+  TITLE: 'FredokaOne-Regular', // Standard title font
   DEFAULT: undefined, // System default
 };
 
